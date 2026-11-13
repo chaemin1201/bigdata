@@ -11,6 +11,7 @@ import io
 import re
 import time
 import requests
+import holidays
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -33,6 +34,24 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+
+# holidays.KR()은 한국 공휴일 날짜(datetime.date 객체)들을 담고 있는 특수한 집합(set)이다.
+# "날짜 in _KR_HOLIDAYS"처럼 in 연산자로 그 날짜가 공휴일인지 바로 물어볼 수 있다.
+_KR_HOLIDAYS = holidays.KR()
+
+
+def is_trading_day(date: datetime = None) -> bool:
+    """평일이면서 한국 공휴일이 아닌 날(=KRX 개장일)인지 확인합니다."""
+    # 함수를 호출할 때 date를 안 넘기면(None) 지금 이 순간(오늘, KST 기준)을 기준으로 판단한다.
+    date = date or datetime.now(KST)
+    # datetime.weekday()는 월요일=0, 화요일=1, ... 일요일=6을 반환한다.
+    # 5(토요일) 이상이면 주말이라는 뜻이므로 거래일이 아니다.
+    if date.weekday() >= 5:  # 5=토요일, 6=일요일
+        return False
+    # datetime(날짜+시각)에서 시각 정보를 뺀 date(날짜만)로 변환해야 holidays 집합과 비교할 수 있다.
+    # "not in"이므로 "공휴일 목록에 없으면 True(거래일)"라는 뜻이다.
+    return date.date() not in _KR_HOLIDAYS
+
 
 def read_watchlist(path: str = WATCHLIST_FILE) -> list:
     """watchlist.csv를 읽어 종목코드 리스트를 반환합니다. 실패 시 None."""

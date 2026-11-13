@@ -2,4 +2,5 @@ requests
 python-dotenv
 pandas
 matplotlib
+holidays>=0.50
 libsql-client

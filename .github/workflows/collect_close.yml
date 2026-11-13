@@ -1,0 +1,25 @@
+name: 종가 히스토리 수집
+
+on:
+  schedule:
+    # KST 20:15 (UTC 11:15), 애프터마켓 마감(20:00) 이후, 평일만
+    # 정시(0분)는 GitHub Actions 스케줄이 몰려 지연·스킵되기 쉬워 일부러 15분에 둠
+    - cron: "15 11 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python collect_daily_close.py
