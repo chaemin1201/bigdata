@@ -1,6 +1,6 @@
 """
-notify_stock_price.py(하루 3회 알림), collect_daily_close.py(하루 1회 종가 수집)가
-공통으로 쓰는 함수 모음.
+notify_stock_price.py(하루 3회 알림), collect_daily_close.py(하루 1회 종가 수집),
+dashboard.py(웹 대시보드)가 공통으로 쓰는 함수 모음.
 
 네이버 금융 비공식 API(m.stock.naver.com)는 장중이면 실시간 체결가를, 장 시작 전/마감
 후에는 가장 최근 종가를 marketStatus/closePrice 필드로 그대로 돌려주므로, 이 하나의
@@ -53,6 +53,30 @@ def is_trading_day(date: datetime = None) -> bool:
     return date.date() not in _KR_HOLIDAYS
 
 
+def _load_watchlist_df(path: str = WATCHLIST_FILE):
+    """watchlist.csv를 읽어 컬럼명을 정규화한 DataFrame을 반환하는 내부 헬퍼.
+    read_watchlist()/read_watchlist_names()가 각자 pd.read_csv()+컬럼 정규화를 중복
+    구현하던 것을 여기 하나로 모았다 (두 함수의 반환 타입·인터페이스는 그대로 유지).
+
+    이 함수는 실행되는 시점에 디스크에 있는 watchlist.csv를 그대로 읽는다 — 즉 "지금 이
+    컴퓨터(또는 실행 환경)에 있는 파일 내용"이 기준이다. GitHub Actions는 매번 실행할 때마다
+    저장소를 새로 체크아웃하므로 항상 origin/main의 최신 watchlist.csv를 읽지만, 로컬에서
+    스크립트를 실행할 때는 다르다 — GitHub 웹(모바일 포함)에서 watchlist.csv를 직접 편집·
+    커밋해도 그건 원격 저장소(GitHub)에만 반영되고, 로컬 복사본은 자동으로 안 바뀐다. 로컬
+    실행 결과에 그 변경을 반영하려면 먼저 `git pull origin main`으로 받아와야 한다."""
+    import pandas as pd
+
+    # pd.read_csv()는 CSV 파일을 읽어 표 형태의 자료구조인 DataFrame으로 돌려준다.
+    # dtype={"code": str}을 안 주면 pandas가 "005930"을 숫자로 착각해 앞자리 0을
+    # 없애버린다(5930) — 앞자리에 0이 있는 종목코드가 깨지지 않도록 문자열로 강제한다.
+    watchlist_df = pd.read_csv(path, dtype={"code": str})
+
+    # 컬럼명의 공백을 제거하고 소문자로 통일하여 'code' 컬럼을 찾습니다.
+    # (리스트 컴프리헨션: 모든 컬럼명 하나하나에 strip()+lower()를 적용해 새 리스트를 만든다)
+    watchlist_df.columns = [col.strip().lower() for col in watchlist_df.columns]
+    return watchlist_df
+
+
 def read_watchlist(path: str = WATCHLIST_FILE) -> list:
     """watchlist.csv를 읽어 종목코드 리스트를 반환합니다. 실패 시 None."""
     if not os.path.exists(path):
@@ -60,15 +84,7 @@ def read_watchlist(path: str = WATCHLIST_FILE) -> list:
         return None
 
     try:
-        import pandas as pd
-
-        # pd.read_csv()는 CSV 파일을 읽어 표 형태의 자료구조인 DataFrame으로 돌려준다.
-        # dtype={"code": str}을 안 주면 pandas가 "005930"을 숫자로 착각해 앞자리 0을
-        # 없애버린다(5930) — 앞자리에 0이 있는 종목코드가 깨지지 않도록 문자열로 강제한다.
-        watchlist_df = pd.read_csv(path, dtype={"code": str})
-
-        # 컬럼명의 공백을 제거하고 소문자로 통일하여 'code' 컬럼을 찾습니다.
-        watchlist_df.columns = [col.strip().lower() for col in watchlist_df.columns]
+        watchlist_df = _load_watchlist_df(path)
 
         if "code" not in watchlist_df.columns:
             print("❌ CSV 파일에 'code' 컬럼이 존재하지 않습니다.")
@@ -82,6 +98,23 @@ def read_watchlist(path: str = WATCHLIST_FILE) -> list:
     except Exception as e:
         print(f"❌ CSV 파일을 읽는 동안 오류가 발생했습니다: {e}")
         return None
+
+
+def read_watchlist_names(path: str = WATCHLIST_FILE) -> dict:
+    """watchlist.csv에 name 컬럼이 있으면 {code: name} 매핑을 반환합니다 (없으면 빈 dict).
+    평소엔 네이버 API 응답의 종목명을 쓰지만, 그 조회 자체가 실패했을 때(대시보드 폴백)
+    종목코드 대신 이름을 보여주기 위한 용도."""
+    try:
+        watchlist_df = _load_watchlist_df(path)
+        if "name" not in watchlist_df.columns:
+            return {}
+        # zip()은 두 리스트(code 열, name 열)를 같은 순서끼리 짝지어 (code, name) 쌍들을 만들고,
+        # dict()가 그 쌍들을 {code: name, ...} 형태의 딕셔너리로 바꿔준다.
+        # 예: code=["005930","000660"], name=["삼성전자","SK하이닉스"]
+        #     → {"005930": "삼성전자", "000660": "SK하이닉스"}
+        return dict(zip(watchlist_df["code"], watchlist_df["name"]))
+    except Exception:
+        return {}
 
 
 def get_turso_client():
@@ -236,8 +269,8 @@ def fetch_naver_current_price(code: str, retries: int = 2) -> dict:
                 # 와도 int() 변환 중 프로그램이 멈추지 않고 0으로 처리하고 넘어가게 한다.
                 price = int(price_str) if price_str.isdigit() else 0
                 # 0원짜리 결과는 절대 그대로 돌려주지 않는다. 파싱에 실패했을 뿐인데 값이 있는 것처럼
-                # 넘기면 텔레그램에 "0원"이라는 멀쩡해 보이는 가격이 표시되고, 그 값이 종가로
-                # 저장되기까지 하면 그래프와 전일 대비 계산이 통째로 깨진다.
+                # 넘기면 텔레그램·대시보드에 "0원"이라는 멀쩡해 보이는 가격이 표시되고, 그 값이
+                # Turso 히스토리에까지 저장되면 그래프와 전일 대비 계산이 통째로 깨진다.
                 # 그래서 "조회 실패"와 똑같이 취급해 (재시도 후에도 안 되면) None을 반환하게 만든다.
                 if price <= 0:
                     print(f"❌ [{code}] 가격을 숫자로 읽지 못했습니다 "
@@ -341,8 +374,8 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str) -> bool:
 
 
 def describe_price_trend(daily_closes: list, intraday_minutes: list) -> str:
-    """그래프에 어떤 데이터가 담겼는지 설명하는 문구를 반환합니다. 그래프를 보여주는 쪽이
-    어디든 같은 문구를 쓰도록 함수로 빼 두었습니다. "최근 N일"이라고 말하려면 N을 세어줄 종가 히스토리가
+    """그래프에 어떤 데이터가 담겼는지 설명하는 문구를 반환합니다. 텔레그램 캡션과 대시보드가
+    동일한 문구를 쓰도록 공용으로 뺐습니다. "최근 N일"이라고 말하려면 N을 세어줄 종가 히스토리가
     반드시 있어야 하므로 daily_closes를 먼저 확인합니다."""
     # daily_closes(과거 종가)가 있어야만 "최근 N일"이라고 말할 수 있다. 분봉(intraday_minutes)을
     # 먼저 보면, 히스토리가 하나도 없는 상태에서 장중에 실행됐을 때 len(daily_closes)가 0이라
@@ -424,8 +457,8 @@ def build_price_chart(daily_closes: list, current_price: int = None,
     """종목별 최근 N일 종가 + 오늘 추이를 선 그래프로 그려 PNG 이미지 버퍼로 반환합니다.
     daily_closes는 [{"date": "YYYYMMDD", "close": 가격}, ...] (날짜 오름차순).
     intraday_minutes를 넘기면(오늘 분봉, 시간 오름차순) 오늘 구간을 분 단위 선으로 그리고,
-    없으면 current_price 한 점만 표시합니다. current_price도 None이면(네이버 API 조회가
-    실패한 경우) "오늘" 지점 없이 daily_closes만으로 그립니다 — 이 경우 daily_closes에
+    없으면 current_price 한 점만 표시합니다. current_price도 None이면(예: 대시보드에서 네이버
+    API 조회가 실패한 경우) "오늘" 지점 없이 daily_closes만으로 그립니다 — 이 경우 daily_closes에
     이미 오늘 종가가 들어있어도(애프터마켓 마감 뒤 collect_daily_close.py가 실행된 뒤라면) 그대로 표시되어
     정보 손실이 없습니다. 반대로 분봉/현재가 조회에 성공하면, daily_closes에 오늘 날짜 종가가
     섞여 있어도 제외하고 그립니다 — "오늘" 구간과 중복 표시되는 것을 막기 위해서입니다."""
@@ -532,7 +565,7 @@ def build_price_chart(daily_closes: list, current_price: int = None,
     # rotation=45, ha="right": 라벨이 많아 겹치지 않도록 45도 기울여서 오른쪽 정렬로 표시한다.
     ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
 
-    # 그림 안에는 더 이상 제목을 넣지 않는다 — 그래프를 보여주는 쪽에서
+    # 그림 안에는 더 이상 제목을 넣지 않는다 — 텔레그램 캡션/대시보드 subheader·metric이
     # 이미 같은 문구(describe_price_trend())를 네이티브 텍스트로 보여주므로 중복이었다.
     ax.set_ylabel("가격 (원)")
     ax.grid(True, alpha=0.3)  # 배경에 옅은(투명도 0.3) 격자선을 넣어 값을 읽기 쉽게 한다.
